@@ -1,0 +1,107 @@
+{
+  "version": 1,
+  "managers": [
+    {
+      "name": "Архипов Виктор Вадимович",
+      "is_support": true,
+      "has_cap": false,
+      "cap": null
+    },
+    {
+      "name": "Баймуканов Владислав Андреевич",
+      "is_support": true,
+      "has_cap": true,
+      "cap": 150
+    },
+    {
+      "name": "Батуев Станислав Игоревич",
+      "is_support": true,
+      "has_cap": true,
+      "cap": 150
+    },
+    {
+      "name": "Бурак Тимур Артёмович",
+      "is_support": true,
+      "has_cap": false,
+      "cap": null
+    },
+    {
+      "name": "Бурцева Юлия Александровна",
+      "is_support": true,
+      "has_cap": false,
+      "cap": null
+    },
+    {
+      "name": "Дин Даниил Юрьевич",
+      "is_support": true,
+      "has_cap": false,
+      "cap": null
+    },
+    {
+      "name": "Егоров Кирилл Сергеевич",
+      "is_support": true,
+      "has_cap": true,
+      "cap": 150
+    },
+    {
+      "name": "Игнатова Алина Андреевна",
+      "is_support": true,
+      "has_cap": false,
+      "cap": null
+    },
+    {
+      "name": "Карташова Диана Дмитриевна",
+      "is_support": true,
+      "has_cap": false,
+      "cap": null
+    },
+    {
+      "name": "Кузнецова Татьяна Павловна",
+      "is_support": true,
+      "has_cap": false,
+      "cap": null
+    },
+    {
+      "name": "Максим Абросимов Новый",
+      "is_support": true,
+      "has_cap": true,
+      "cap": 150
+    },
+    {
+      "name": "Никонов Вячеслав",
+      "is_support": true,
+      "has_cap": false,
+      "cap": null
+    },
+    {
+      "name": "Подойников Алексей Алексеевич",
+      "is_support": true,
+      "has_cap": false,
+      "cap": null
+    },
+    {
+      "name": "Прокопьева Анастасия Олеговна",
+      "is_support": true,
+      "has_cap": false,
+      "cap": null
+    },
+    {
+      "name": "Пшеничникова Станислава Антоновна",
+      "is_support": true,
+      "has_cap": false,
+      "cap": null
+    },
+    {
+      "name": "Соловьев Игорь",
+      "is_support": true,
+      "has_cap": false,
+      "cap": null
+    },
+    {
+      "name": "Фиц Роман Геннадьевич",
+      "is_support": true,
+      "has_cap": false,
+      "cap": null
+    }
+  ]
+}
