@@ -31,7 +31,7 @@
 
 **Зависимости:**
 ```bash
-pip install pandas openpyxl matplotlib
+pip install -r requirements.txt
 ```
 > *Примечание: Для работы интерфейса требуется библиотека `tkinter`. На Windows и macOS она устанавливается вместе с Python, на Linux может потребоваться пакет `python3-tk`.*
 
