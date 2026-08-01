@@ -1,0 +1,25 @@
+# python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# venv
+venv/
+.env/
+
+# macOS
+.DS_Store
+
+# excel
+*.xlsx
+*.xls
+
+# python cache
+*.egg-info/
+
+# vscode
+.vscode/
+
+# sensitive data
+managers.json
