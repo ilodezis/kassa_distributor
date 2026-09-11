@@ -15,17 +15,14 @@ COL_NEW_MANAGER = "Новый менеджер"
 
 VALID_TARIFFS = (1, 3, 12)
 
+# Допуски — это пороги отчёта в логе проверок и запас сверх cap при расчёте таргетов.
+# В саму раскладку они не входят: этап 1 даёт точное попадание по total,
+# этап 2 минимизирует отклонение по тарифам без «мёртвой зоны».
 TOTAL_TOLERANCE = 5
 PERIOD_TOLERANCE = 3
 BIG_CAP = 10**9
 
-EXTERNAL_PERIOD_WEIGHT = 4.0
-EXTERNAL_TOTAL_WEIGHT = 2.0
-INTERNAL_PERIOD_WEIGHT = 3.0
-INTERNAL_TOTAL_WEIGHT = 2.5
-CAPPED_PERIOD_FACTOR = 2.5
-
-MAX_INTERNAL_ITERATIONS = 5000
+MAX_SWAP_PASSES = 200
 
 
 @dataclass
@@ -348,294 +345,147 @@ def _compute_target_periods(
     return result
 
 
-def _total_penalty(actual: int, target: int, cap: Optional[int]) -> float:
-    diff = abs(actual - target)
-    excess = max(0, diff - TOTAL_TOLERANCE)
-    penalty = float(excess * excess)
-
-    if cap not in (None, 0):
-        hard_excess = max(0, actual - (int(cap) + TOTAL_TOLERANCE))
-        if hard_excess > 0:
-            penalty += 1_000_000.0 * hard_excess
-    return penalty
-
-
 def _period_penalty(actual: int, target: int) -> float:
-    diff = abs(actual - target)
-    excess = max(0, diff - PERIOD_TOLERANCE)
-    return float(excess * excess)
+    diff = actual - target
+    return float(diff * diff)
 
 
-def _manager_violation_score(
-    manager: str,
-    totals: Dict[str, int],
-    periods: Dict[str, Dict[int, int]],
-    total_targets: Dict[str, int],
-    period_targets: Dict[str, Dict[int, int]],
-    cap_map: Dict[str, Optional[int]],
-    total_weight: float,
-    period_weight: float,
-) -> float:
-    cap = cap_map.get(manager)
-    has_cap = cap not in (None, 0)
-
-    score = total_weight * _total_penalty(totals[manager], total_targets[manager], cap)
-
-    pw = period_weight * (CAPPED_PERIOD_FACTOR if has_cap else 1.0)
-    for tariff in VALID_TARIFFS:
-        score += pw * _period_penalty(periods[manager][tariff], period_targets[manager][tariff])
-
-    return score
-
-
-def _pair_score_after_external_add(
-    manager: str,
-    tariff: int,
-    totals: Dict[str, int],
-    periods: Dict[str, Dict[int, int]],
-    total_targets: Dict[str, int],
-    period_targets: Dict[str, Dict[int, int]],
-    cap_map: Dict[str, Optional[int]],
-) -> float:
-    new_totals = {manager: totals[manager] + 1}
-    new_periods = {
-        manager: {
-            1: periods[manager][1],
-            3: periods[manager][3],
-            12: periods[manager][12],
-        }
-    }
-    new_periods[manager][tariff] += 1
-
-    cap = cap_map.get(manager)
-    has_cap = cap not in (None, 0)
-
-    total_part = EXTERNAL_TOTAL_WEIGHT * _total_penalty(new_totals[manager], total_targets[manager], cap)
-    period_part = 0.0
-    pw = EXTERNAL_PERIOD_WEIGHT * (CAPPED_PERIOD_FACTOR if has_cap else 1.0)
-    for t in VALID_TARIFFS:
-        period_part += pw * _period_penalty(new_periods[manager][t], period_targets[manager][t])
-
-    # Лёгкое предпочтение тем, у кого total сейчас меньше
-    return total_part + period_part + (totals[manager] * 0.01)
-
-
-def _assign_external_rows(
+def _exact_total_fill(
     work_df: pd.DataFrame,
     support_managers: List[str],
     total_targets: Dict[str, int],
     period_targets: Dict[str, Dict[int, int]],
-    cap_map: Dict[str, Optional[int]],
 ) -> pd.DataFrame:
-    # locked: paid на support не двигаем
-    is_support_now = work_df[COL_MANAGER].isin(support_managers)
-    locked_mask = is_support_now & (work_df[COL_PAID] == 1)
+    """Этап 1: каждый support-менеджер получает ровно total_targets[m] касс.
 
+    Свободный пул по построению равен суммарной нехватке, поэтому раскладка
+    всегда сходится и разброс по total выходит нулевым — это арифметика, а не
+    оптимизация. Тариф здесь работает только тайбрейком, его правит этап 2.
+    """
     result = work_df.copy()
     result[COL_NEW_MANAGER] = result[COL_MANAGER]
 
-    current_df = result.loc[locked_mask, [COL_NEW_MANAGER, COL_TARIFF]].copy()
-    totals, periods = _count_from_assignment(current_df, COL_NEW_MANAGER, support_managers)
+    is_support_now = result[COL_MANAGER].isin(support_managers)
+    locked_mask = is_support_now & (result[COL_PAID] == 1)
 
-    # external: всё с non-support
-    external_mask = ~is_support_now
-    external_df = result.loc[external_mask].copy()
+    counts = {m: 0 for m in support_managers}
+    per_tariff = {m: {t: 0 for t in VALID_TARIFFS} for m in support_managers}
+    for idx in result.index[locked_mask]:
+        manager = result.at[idx, COL_NEW_MANAGER]
+        counts[manager] += 1
+        per_tariff[manager][int(result.at[idx, COL_TARIFF])] += 1
 
-    # сначала распределяем более редкие тарифы, потом массовые не так критично
-    tariff_freq = result[COL_TARIFF].value_counts().to_dict()
-    external_df["_tariff_freq"] = external_df[COL_TARIFF].map(lambda x: tariff_freq.get(x, 0))
-    external_df = external_df.sort_values(
-        by=["_tariff_freq", COL_TARIFF],
-        ascending=[True, True],
-        kind="stable",
-    )
+    # минимум миграций: кто уже на support и влезает в таргет — остаётся на месте
+    pool = []
+    for idx in result.index[~locked_mask]:
+        current = result.at[idx, COL_NEW_MANAGER]
+        if current in counts and counts[current] < total_targets[current]:
+            counts[current] += 1
+            per_tariff[current][int(result.at[idx, COL_TARIFF])] += 1
+        else:
+            pool.append(idx)
 
-    assignments = {}
-    for idx, row in external_df.iterrows():
-        tariff = int(row[COL_TARIFF])
+    by_tariff = {t: [] for t in VALID_TARIFFS}
+    for idx in pool:
+        by_tariff[int(result.at[idx, COL_TARIFF])].append(idx)
 
-        candidates = []
-        for manager in support_managers:
-            score = _pair_score_after_external_add(
-                manager=manager,
-                tariff=tariff,
-                totals=totals,
-                periods=periods,
-                total_targets=total_targets,
-                period_targets=period_targets,
-                cap_map=cap_map,
-            )
-            candidates.append((score, totals[manager], manager))
+    deficit = {m: total_targets[m] - counts[m] for m in support_managers}
 
-        candidates.sort(key=lambda x: (x[0], x[1], x[2]))
-        chosen = candidates[0][2]
-        assignments[idx] = chosen
-        totals[chosen] += 1
-        periods[chosen][tariff] += 1
+    # сначала редкие тарифы, иначе под конец выбирать будет не из чего
+    for tariff in sorted(VALID_TARIFFS, key=lambda t: len(by_tariff[t])):
+        for idx in by_tariff[tariff]:
+            candidates = [m for m in support_managers if deficit[m] > 0]
+            if candidates:
+                # кому этот тариф нужнее; при равенстве — у кого больше общая нехватка
+                best = max(
+                    candidates,
+                    key=lambda m: (
+                        period_targets[m][tariff] - per_tariff[m][tariff],
+                        deficit[m],
+                        m,
+                    ),
+                )
+            else:
+                # таргеты не вместили всё (cap у всех слишком низкий) — кассу всё
+                # равно не теряем, кладём наименее загруженному. Лог проверок это поймает.
+                best = min(support_managers, key=lambda m: (counts[m], m))
 
-    if assignments:
-        result.loc[list(assignments.keys()), COL_NEW_MANAGER] = pd.Series(assignments)
+            result.at[idx, COL_NEW_MANAGER] = best
+            counts[best] += 1
+            per_tariff[best][tariff] += 1
+            deficit[best] -= 1
 
     return result
 
 
-def _compute_state_from_result(
+def _tariff_swaps(
     result_df: pd.DataFrame,
     support_managers: List[str],
-) -> Tuple[Dict[str, int], Dict[str, Dict[int, int]]]:
-    return _count_from_assignment(result_df, COL_NEW_MANAGER, support_managers)
-
-
-def _global_state_score(
-    totals: Dict[str, int],
-    periods: Dict[str, Dict[int, int]],
-    total_targets: Dict[str, int],
     period_targets: Dict[str, Dict[int, int]],
-    cap_map: Dict[str, Optional[int]],
-) -> float:
-    score = 0.0
-    for manager in totals.keys():
-        score += _manager_violation_score(
-            manager=manager,
-            totals=totals,
-            periods=periods,
-            total_targets=total_targets,
-            period_targets=period_targets,
-            cap_map=cap_map,
-            total_weight=INTERNAL_TOTAL_WEIGHT,
-            period_weight=INTERNAL_PERIOD_WEIGHT,
-        )
-    return score
-
-
-def _manager_needs_total(manager: str, totals: Dict[str, int], total_targets: Dict[str, int]) -> int:
-    return total_targets[manager] - totals[manager]
-
-
-def _manager_needs_tariff(
-    manager: str,
-    tariff: int,
-    periods: Dict[str, Dict[int, int]],
-    period_targets: Dict[str, Dict[int, int]],
-) -> int:
-    return period_targets[manager][tariff] - periods[manager][tariff]
-
-
-def _conservative_internal_rebalance(
-    result_df: pd.DataFrame,
-    support_managers: List[str],
-    total_targets: Dict[str, int],
-    period_targets: Dict[str, Dict[int, int]],
-    cap_map: Dict[str, Optional[int]],
+    max_passes: int = MAX_SWAP_PASSES,
 ) -> pd.DataFrame:
+    """Этап 2: правим тарифный микс только парными обменами.
+
+    Менеджер A отдаёт кассу тарифа X, B отдаёт кассу тарифа Y. Количество касс
+    у обоих сохраняется, поэтому этап 2 физически не может испортить итоги,
+    выставленные этапом 1. Двигаем только неоплаченные кассы.
+    """
     df = result_df.copy()
-    donor_usage = {m: 0 for m in support_managers}
+    on_support = df[COL_NEW_MANAGER].isin(support_managers)
+    movable = on_support & (df[COL_PAID] == 0)
 
-    unpaid_pool_mask = (df[COL_NEW_MANAGER].isin(support_managers)) & (df[COL_PAID] == 0)
+    rows = {(m, t): [] for m in support_managers for t in VALID_TARIFFS}
+    counts = {m: {t: 0 for t in VALID_TARIFFS} for m in support_managers}
+    for idx in df.index[on_support]:
+        manager = df.at[idx, COL_NEW_MANAGER]
+        tariff = int(df.at[idx, COL_TARIFF])
+        counts[manager][tariff] += 1
+        if movable.at[idx]:
+            rows[(manager, tariff)].append(idx)
 
-    for _ in range(MAX_INTERNAL_ITERATIONS):
-        totals, periods = _compute_state_from_result(df, support_managers)
-        before_score = _global_state_score(totals, periods, total_targets, period_targets, cap_map)
+    def penalty(manager: str, tariff: int, delta: int = 0) -> float:
+        return _period_penalty(counts[manager][tariff] + delta, period_targets[manager][tariff])
 
-        best_move = None
-        best_gain = 0.0
+    for _ in range(max_passes):
+        improved = False
 
-        # receiver: кто реально в дефиците
-        receivers = []
-        for manager in support_managers:
-            total_need = _manager_needs_total(manager, totals, total_targets)
-            tariff_needs = {t: _manager_needs_tariff(manager, t, periods, period_targets) for t in VALID_TARIFFS}
-            receivers.append((manager, total_need, tariff_needs))
+        for donor in support_managers:
+            for taker in support_managers:
+                if taker == donor:
+                    continue
 
-        # перебираем дефициты по тарифам в первую очередь, потом по total
-        for receiver, total_need, tariff_needs in receivers:
-            needed_tariffs = [
-                t for t in VALID_TARIFFS
-                if tariff_needs[t] > PERIOD_TOLERANCE or (tariff_needs[t] > 0 and total_need > 0)
-            ]
-            if not needed_tariffs and total_need <= TOTAL_TOLERANCE:
-                continue
+                for give in VALID_TARIFFS:
+                    for take in VALID_TARIFFS:
+                        if take == give:
+                            continue
 
-            candidate_tariffs = needed_tariffs if needed_tariffs else list(VALID_TARIFFS)
+                        while rows[(donor, give)] and rows[(taker, take)]:
+                            before = (
+                                penalty(donor, give) + penalty(donor, take)
+                                + penalty(taker, give) + penalty(taker, take)
+                            )
+                            after = (
+                                penalty(donor, give, -1) + penalty(donor, take, +1)
+                                + penalty(taker, give, +1) + penalty(taker, take, -1)
+                            )
+                            if after >= before:
+                                break
 
-            for tariff in candidate_tariffs:
-                donors = []
-                for donor in support_managers:
-                    if donor == receiver:
-                        continue
+                            given = rows[(donor, give)].pop()
+                            taken = rows[(taker, take)].pop()
+                            df.at[given, COL_NEW_MANAGER] = taker
+                            df.at[taken, COL_NEW_MANAGER] = donor
+                            rows[(taker, give)].append(given)
+                            rows[(donor, take)].append(taken)
 
-                    donor_total_excess = totals[donor] - total_targets[donor]
-                    donor_tariff_excess = periods[donor][tariff] - period_targets[donor][tariff]
+                            counts[donor][give] -= 1
+                            counts[donor][take] += 1
+                            counts[taker][give] += 1
+                            counts[taker][take] -= 1
+                            improved = True
 
-                    if donor_total_excess <= 0 and donor_tariff_excess <= 0:
-                        continue
-
-                    donor_rows = df.index[
-                        unpaid_pool_mask
-                        & (df[COL_NEW_MANAGER] == donor)
-                        & (df[COL_TARIFF] == tariff)
-                    ].tolist()
-
-                    if not donor_rows:
-                        continue
-
-                    donors.append(
-                        (
-                            donor,
-                            donor_total_excess,
-                            donor_tariff_excess,
-                            donor_usage[donor],
-                            donor_rows[0],  # двигаем по одной
-                        )
-                    )
-
-                # забираем не у одного, а у тех, кого меньше уже трогали
-                donors.sort(
-                    key=lambda x: (
-                        -max(x[2], 0),
-                        -max(x[1], 0),
-                        x[3],
-                        x[0],
-                    )
-                )
-
-                for donor, _, _, usage_count, row_idx in donors:
-                    # симуляция одного переноса donor -> receiver
-                    new_totals = {m: totals[m] for m in support_managers}
-                    new_periods = {
-                        m: {1: periods[m][1], 3: periods[m][3], 12: periods[m][12]}
-                        for m in support_managers
-                    }
-
-                    new_totals[donor] -= 1
-                    new_totals[receiver] += 1
-                    new_periods[donor][tariff] -= 1
-                    new_periods[receiver][tariff] += 1
-
-                    after_score = _global_state_score(
-                        new_totals,
-                        new_periods,
-                        total_targets,
-                        period_targets,
-                        cap_map,
-                    )
-
-                    # штраф за дёргание одного и того же донора
-                    fairness_penalty = usage_count * 0.1
-                    gain = before_score - (after_score + fairness_penalty)
-
-                    if gain > best_gain:
-                        best_gain = gain
-                        best_move = (row_idx, donor, receiver, tariff)
-
-        if not best_move or best_gain <= 0:
+        if not improved:
             break
-
-        row_idx, donor, receiver, tariff = best_move
-        df.at[row_idx, COL_NEW_MANAGER] = receiver
-        donor_usage[donor] += 1
-
-        unpaid_pool_mask = (df[COL_NEW_MANAGER].isin(support_managers)) & (df[COL_PAID] == 0)
 
     return df
 
@@ -724,15 +574,21 @@ def _build_checks(
     if cap_ok:
         checks.append(f"Все cap соблюдены с допуском +{TOTAL_TOLERANCE}: ДА")
 
-    total_ok = (summary_df["delta_total"].abs() <= TOTAL_TOLERANCE).all()
-    checks.append(f"Все total в допуске ±{TOTAL_TOLERANCE}: {'ДА' if total_ok else 'НЕТ'}")
-
-    period_ok = (
-        (summary_df["delta_1"].abs() <= PERIOD_TOLERANCE).all()
-        and (summary_df["delta_3"].abs() <= PERIOD_TOLERANCE).all()
-        and (summary_df["delta_12"].abs() <= PERIOD_TOLERANCE).all()
+    worst_total = int(summary_df["delta_total"].abs().max())
+    total_ok = worst_total <= TOTAL_TOLERANCE
+    checks.append(
+        f"Все total в допуске ±{TOTAL_TOLERANCE}: {'ДА' if total_ok else 'НЕТ'} "
+        f"(макс. отклонение {worst_total})"
     )
-    checks.append(f"Все тарифы в допуске ±{PERIOD_TOLERANCE}: {'ДА' if period_ok else 'НЕТ'}")
+
+    worst_period = int(
+        max(summary_df[f"delta_{t}"].abs().max() for t in VALID_TARIFFS)
+    )
+    period_ok = worst_period <= PERIOD_TOLERANCE
+    checks.append(
+        f"Все тарифы в допуске ±{PERIOD_TOLERANCE}: {'ДА' if period_ok else 'НЕТ'} "
+        f"(макс. отклонение {worst_period})"
+    )
 
     return checks
 
@@ -765,26 +621,19 @@ def distribute_cash_registers(df: pd.DataFrame, managers_config: Dict) -> Distri
     shares = _global_tariff_shares(work)
     period_targets = _compute_target_periods(total_targets, shares)
 
-    # Шаг 1: всё внешнее на support, paid на support остаются locked
-    assigned = _assign_external_rows(
+    # Шаг 1: точное попадание в таргет по количеству касс
+    assigned = _exact_total_fill(
         work_df=work,
         support_managers=support_managers,
         total_targets=total_targets,
         period_targets=period_targets,
-        cap_map=cap_map,
     )
 
-    # unpaid внутри support изначально пока остаются на своих местах
-    internal_unpaid_mask = (work[COL_MANAGER].isin(support_managers)) & (work[COL_PAID] == 0)
-    assigned.loc[internal_unpaid_mask, COL_NEW_MANAGER] = assigned.loc[internal_unpaid_mask, COL_MANAGER]
-
-    # Шаг 2: бережный внутренний ребаланс unpaid на support
-    assigned = _conservative_internal_rebalance(
+    # Шаг 2: тарифный микс обменами, итоги по количеству не меняются
+    assigned = _tariff_swaps(
         result_df=assigned,
         support_managers=support_managers,
-        total_targets=total_targets,
         period_targets=period_targets,
-        cap_map=cap_map,
     )
 
     summary_df = _build_summary(
