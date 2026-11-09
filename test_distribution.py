@@ -173,6 +173,31 @@ def test_inn_keeps_leading_zero():
     assert back.loc[0, COL_INN] == "071303241361"
 
 
+def test_built_app_keeps_config_outside_bundle():
+    """A built mac app must not store managers.json inside the .app bundle."""
+    import os
+    import sys
+
+    saved = (getattr(sys, "frozen", None), sys.platform)
+    try:
+        sys.frozen = True
+        sys.platform = "darwin"
+        path = logic.default_config_path()
+    finally:
+        if saved[0] is None:
+            del sys.frozen
+        else:
+            sys.frozen = saved[0]
+        sys.platform = saved[1]
+
+    expected = os.path.join(
+        os.path.expanduser("~/Library/Application Support"), "KassaDistributor", "managers.json"
+    )
+    assert path == expected
+    assert logic.default_config_path().endswith("managers.json")
+    assert ".app" not in logic.default_config_path()
+
+
 if __name__ == "__main__":
     for name, case in sorted(globals().items()):
         if name.startswith("test_"):

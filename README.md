@@ -49,6 +49,12 @@ pip install -r requirements.txt
 python app.py
 ```
 
+## Сборка под macOS
+
+GitHub Actions (`.github/workflows/build-mac.yml`) собирает `kassa.app` через PyInstaller под Apple Silicon и Intel: вручную (Run workflow) или на тег `v*` — тогда zip-архивы прикрепляются к релизу. Приложение не подписано: при первом запуске macOS попросит разрешить его в «Настройки → Конфиденциальность и безопасность».
+
+Собранное приложение хранит `managers.json` в `~/Library/Application Support/KassaDistributor/`, а не внутри `.app`, поэтому настройки переживают обновление на новую сборку.
+
 ## Формат входного Excel
 
 Выгрузка `renewal-distribution-YYYY-MM.xlsx`, читается первый лист. Обязательные колонки:

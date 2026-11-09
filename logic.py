@@ -58,8 +58,27 @@ def resource_path(filename: str) -> str:
     return os.path.join(base_dir, filename)
 
 
+APP_DIR_NAME = "KassaDistributor"
+
+
+def user_data_dir() -> str:
+    """Writable per-user folder that survives replacing the app with a new build."""
+    if sys.platform == "darwin":
+        base = os.path.expanduser("~/Library/Application Support")
+    elif sys.platform == "win32":
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    return os.path.join(base, APP_DIR_NAME)
+
+
 def default_config_path() -> str:
-    return resource_path("managers.json")
+    # From source the config sits next to the code. A built app keeps it in the
+    # user data folder: the bundle may be read-only (macOS app translocation)
+    # and is wiped whenever the app is replaced with a new build.
+    if not getattr(sys, "frozen", False):
+        return resource_path("managers.json")
+    return os.path.join(user_data_dir(), "managers.json")
 
 
 def _default_config() -> Dict:
