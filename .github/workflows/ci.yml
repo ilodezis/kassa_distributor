@@ -1,0 +1,84 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: npm
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  # Universal macOS app (Apple Silicon + Intel) as an unsigned .dmg: built by hand from the
+  # workflow page (Run workflow) or on a v* tag, which also attaches the .dmg to the release.
+  build-mac:
+    needs: test
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+    runs-on: macos-26
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      - name: Build the universal app
+        run: npm run tauri build -- --target universal-apple-darwin
+
+      - name: Locate the .dmg and check the app is universal
+        id: dmg
+        run: |
+          bundle=src-tauri/target/universal-apple-darwin/release/bundle
+          dmg=$(ls "$bundle"/dmg/*.dmg)
+          echo "path=$dmg" >> "$GITHUB_OUTPUT"
+          ls -lh "$dmg"
+          for bin in "$bundle"/macos/*.app/Contents/MacOS/*; do
+            archs=$(lipo -archs "$bin")
+            echo "$bin: $archs"
+            case "$archs" in
+              *x86_64*arm64* | *arm64*x86_64*) ;;
+              *) echo "::error::$bin is not a universal binary"; exit 1 ;;
+            esac
+          done
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: kassa-distributor-mac-universal
+          path: ${{ steps.dmg.outputs.path }}
+          if-no-files-found: error
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: ${{ steps.dmg.outputs.path }}
