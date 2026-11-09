@@ -8,10 +8,25 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 
 
-COL_MANAGER = "Менеджер"
+# Columns of the renewal-distribution export. A manager is identified by email:
+# the full name drifts between exports (word order, login instead of name), email does not.
+COL_MANAGER = "Почта текущего менеджера"
+COL_MANAGER_NAME = "ФИО текущего менеджера"
+COL_INN = "ИНН"
 COL_TARIFF = "Тариф"
-COL_PAID = "Оплачен ИНН"
-COL_NEW_MANAGER = "Новый менеджер"
+COL_STATUS = "Статус оплаты"
+COL_TERMINATION = "Дата расторжения"
+
+# Added to the result
+COL_NEW_MANAGER = "Почта нового менеджера"
+COL_NEW_MANAGER_NAME = "Новый менеджер"
+
+# Internal columns, dropped from the result
+COL_PAID = "_paid"
+COL_FROZEN = "_frozen_reason"
+
+STATUS_PAID = "paid"
+KNOWN_STATUSES = ("paid", "topay")
 
 VALID_TARIFFS = (1, 3, 12)
 
@@ -48,7 +63,62 @@ def default_config_path() -> str:
 
 
 def _default_config() -> Dict:
-    return {"version": 1, "managers": []}
+    return {"version": 2, "managers": []}
+
+
+def _norm_email(value) -> str:
+    if value is None or (not isinstance(value, str) and pd.isna(value)):
+        return ""
+    return str(value).strip().lower()
+
+
+def _norm_name(value) -> str:
+    if value is None or (not isinstance(value, str) and pd.isna(value)):
+        return ""
+    return str(value).strip()
+
+
+def manager_key(item: Dict) -> str:
+    """Config entry key: email, or name for legacy entries without email."""
+    return _norm_email(item.get("email")) or _norm_name(item.get("name")).lower()
+
+
+def _normalize_managers(items, strict_cap: bool) -> List[Dict]:
+    normalized = []
+    seen = set()
+
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
+
+        email = _norm_email(item.get("email"))
+        name = _norm_name(item.get("name"))
+        key = email or name.lower()
+        if not key or key in seen:
+            continue
+
+        has_cap = bool(item.get("has_cap", item.get("cap") not in (None, "", 0)))
+        cap = None
+        if has_cap and item.get("cap") not in (None, ""):
+            try:
+                cap = int(item["cap"])
+            except Exception:
+                if strict_cap:
+                    raise
+                cap = None
+
+        normalized.append(
+            {
+                "email": email,
+                "name": name or email,
+                "is_support": bool(item.get("is_support", False)),
+                "has_cap": cap is not None,
+                "cap": cap,
+            }
+        )
+        seen.add(key)
+
+    return normalized
 
 
 def load_managers_config(path: Optional[str] = None) -> Dict:
@@ -61,45 +131,8 @@ def load_managers_config(path: Optional[str] = None) -> Dict:
     with open(path, "r", encoding="utf-8") as f:
         raw = json.load(f)
 
-    if not isinstance(raw, dict):
-        raw = _default_config()
-
-    items = raw.get("managers", [])
-    if not isinstance(items, list):
-        items = []
-
-    normalized = []
-    seen = set()
-
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-
-        name = str(item.get("name", "")).strip()
-        if not name or name.lower() in seen:
-            continue
-
-        is_support = bool(item.get("is_support", False))
-        has_cap = bool(item.get("has_cap", item.get("cap") not in (None, "", 0)))
-
-        cap = None
-        if has_cap and item.get("cap") not in (None, ""):
-            try:
-                cap = int(item["cap"])
-            except Exception:
-                cap = None
-
-        normalized.append(
-            {
-                "name": name,
-                "is_support": is_support,
-                "has_cap": bool(cap is not None) if has_cap else False,
-                "cap": cap if has_cap and cap is not None else None,
-            }
-        )
-        seen.add(name.lower())
-
-    return {"version": 1, "managers": normalized}
+    items = raw.get("managers", []) if isinstance(raw, dict) else []
+    return {"version": 2, "managers": _normalize_managers(items, strict_cap=False)}
 
 
 def save_managers_config(data: Dict, path: Optional[str] = None) -> None:
@@ -108,78 +141,123 @@ def save_managers_config(data: Dict, path: Optional[str] = None) -> None:
     if directory:
         os.makedirs(directory, exist_ok=True)
 
-    out = {"version": 1, "managers": []}
-    seen = set()
-
-    for item in data.get("managers", []):
-        name = str(item.get("name", "")).strip()
-        if not name or name.lower() in seen:
-            continue
-
-        is_support = bool(item.get("is_support", False))
-        has_cap = bool(item.get("has_cap", item.get("cap") not in (None, "", 0)))
-
-        cap = None
-        if has_cap and item.get("cap") not in (None, ""):
-            cap = int(item["cap"])
-
-        out["managers"].append(
-            {
-                "name": name,
-                "is_support": is_support,
-                "has_cap": bool(cap is not None) if has_cap else False,
-                "cap": cap if has_cap and cap is not None else None,
-            }
-        )
-        seen.add(name.lower())
+    out = {"version": 2, "managers": _normalize_managers(data.get("managers", []), strict_cap=True)}
 
     with open(path, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=2)
 
 
-def ensure_managers_present(config: Dict, managers_from_df: List[str]) -> Dict:
-    result = {"version": 1, "managers": [dict(x) for x in config.get("managers", [])]}
-    existing = {str(x.get("name", "")).strip().lower() for x in result["managers"]}
+def managers_from_df(df: pd.DataFrame) -> List[Tuple[str, str]]:
+    """(email, full name) pairs from the export, one per email."""
+    if COL_MANAGER not in df.columns:
+        return []
+    names = df[COL_MANAGER_NAME] if COL_MANAGER_NAME in df.columns else pd.Series("", index=df.index)
+    pairs = {}
+    for email, name in zip(df[COL_MANAGER], names):
+        email = _norm_email(email)
+        if email and email not in pairs:
+            pairs[email] = _norm_name(name)
+    return sorted(pairs.items())
 
-    for name in sorted({str(x).strip() for x in managers_from_df if str(x).strip()}):
-        if name.lower() not in existing:
-            result["managers"].append(
-                {
-                    "name": name,
-                    "is_support": False,
-                    "has_cap": False,
-                    "cap": None,
-                }
-            )
 
-    result["managers"] = sorted(result["managers"], key=lambda x: x["name"].lower())
+def ensure_managers_present(config: Dict, managers: List[Tuple[str, str]]) -> Dict:
+    """Adds managers from the export to the config (new ones are not support).
+
+    Legacy entries without email get one when their name exactly matches
+    a full name in the export. Everything else is up to the person running
+    the distribution, in the UI.
+    """
+    result = {"version": 2, "managers": [dict(x) for x in config.get("managers", [])]}
+    by_email = {_norm_email(x.get("email")): x for x in result["managers"] if _norm_email(x.get("email"))}
+    legacy_by_name = {
+        _norm_name(x.get("name")).lower(): x
+        for x in result["managers"]
+        if not _norm_email(x.get("email"))
+    }
+
+    for email, name in managers:
+        email = _norm_email(email)
+        name = _norm_name(name)
+        if not email or email in by_email:
+            continue
+
+        legacy = legacy_by_name.pop(name.lower(), None) if name else None
+        if legacy is not None:
+            legacy["email"] = email
+            by_email[email] = legacy
+            continue
+
+        entry = {"email": email, "name": name or email, "is_support": False, "has_cap": False, "cap": None}
+        result["managers"].append(entry)
+        by_email[email] = entry
+
+    result["managers"] = sorted(result["managers"], key=lambda x: str(x.get("name", "")).lower())
     return result
 
 
 def get_support_managers(config: Dict) -> List[str]:
-    return [x["name"] for x in config.get("managers", []) if x.get("is_support")]
+    """Emails of support managers. An entry without email cannot take part."""
+    return [
+        _norm_email(x.get("email"))
+        for x in config.get("managers", [])
+        if x.get("is_support") and _norm_email(x.get("email"))
+    ]
+
+
+def get_support_without_email(config: Dict) -> List[str]:
+    return [
+        _norm_name(x.get("name"))
+        for x in config.get("managers", [])
+        if x.get("is_support") and not _norm_email(x.get("email"))
+    ]
 
 
 def get_cap_map(config: Dict) -> Dict[str, Optional[int]]:
     out = {}
     for item in config.get("managers", []):
-        name = item.get("name")
-        if not name:
+        email = _norm_email(item.get("email"))
+        if not email:
             continue
         if item.get("has_cap") and item.get("cap") not in (None, ""):
-            out[name] = int(item["cap"])
+            out[email] = int(item["cap"])
         else:
-            out[name] = None
+            out[email] = None
     return out
 
 
+def get_name_map(config: Dict, df: Optional[pd.DataFrame] = None) -> Dict[str, str]:
+    """Email -> display name: from the config, else from the export."""
+    out = {}
+    if df is not None:
+        for email, name in managers_from_df(df):
+            out[email] = name or email
+    for item in config.get("managers", []):
+        email = _norm_email(item.get("email"))
+        if email and _norm_name(item.get("name")):
+            out[email] = _norm_name(item.get("name"))
+    return out
+
+
+def read_input_excel(path: str) -> pd.DataFrame:
+    """Read the INN as text, otherwise pandas turns 071303241361 into 71303241361."""
+    return pd.read_excel(path, sheet_name=0, dtype={COL_INN: str})
+
+
 def _validate_and_prepare_df(df: pd.DataFrame) -> pd.DataFrame:
-    missing = [c for c in (COL_MANAGER, COL_TARIFF, COL_PAID) if c not in df.columns]
+    """Normalizes the export and marks frozen rows.
+
+    Frozen rows stay on their current manager and are excluded from balancing:
+    - rows with a termination date;
+    - rows with an unknown payment status (not paid/topay).
+    """
+    required = (COL_MANAGER, COL_MANAGER_NAME, COL_TARIFF, COL_STATUS)
+    missing = [c for c in required if c not in df.columns]
     if missing:
         raise ValueError(f"В файле нет обязательных колонок: {', '.join(missing)}")
 
     out = df.copy()
-    out[COL_MANAGER] = out[COL_MANAGER].astype(str).str.strip()
+    out[COL_MANAGER] = out[COL_MANAGER].map(_norm_email)
+    out[COL_MANAGER_NAME] = out[COL_MANAGER_NAME].map(_norm_name)
 
     def parse_tariff(v):
         if pd.isna(v):
@@ -189,23 +267,26 @@ def _validate_and_prepare_df(df: pd.DataFrame) -> pd.DataFrame:
         except Exception:
             return None
 
-    def parse_paid(v):
-        if pd.isna(v):
-            return 0
-        try:
-            return 1 if int(float(v)) == 1 else 0
-        except Exception:
-            return 0
-
     out[COL_TARIFF] = out[COL_TARIFF].apply(parse_tariff)
-    out[COL_PAID] = out[COL_PAID].apply(parse_paid)
 
-    bad = out[~out[COL_TARIFF].isin(VALID_TARIFFS)]
-    if not bad.empty:
-        raise ValueError("Обнаружены строки с некорректным тарифом. Допустимы только 1, 3, 12.")
+    status = out[COL_STATUS].map(_norm_name).str.lower()
+    out[COL_PAID] = (status == STATUS_PAID).astype(int)
+
+    reason = pd.Series("", index=out.index, dtype=object)
+    if COL_TERMINATION in out.columns:
+        terminated = out[COL_TERMINATION].map(_norm_name) != ""
+        reason[terminated] = "расторжение"
+    unknown = ~status.isin(KNOWN_STATUSES) & (reason == "")
+    reason[unknown] = "неизвестный статус оплаты: '" + status[unknown] + "'"
+    out[COL_FROZEN] = reason
 
     if (out[COL_MANAGER] == "").any():
-        raise ValueError("Есть строки с пустым менеджером.")
+        raise ValueError("Есть строки без почты менеджера.")
+
+    active = out[COL_FROZEN] == ""
+    bad = out[active & ~out[COL_TARIFF].isin(VALID_TARIFFS)]
+    if not bad.empty:
+        raise ValueError("Обнаружены строки с некорректным тарифом. Допустимы только 1, 3, 12.")
 
     return out
 
@@ -496,7 +577,9 @@ def _build_summary(
     cap_map: Dict[str, Optional[int]],
     total_targets: Dict[str, int],
     period_targets: Dict[str, Dict[int, int]],
+    name_map: Optional[Dict[str, str]] = None,
 ) -> pd.DataFrame:
+    name_map = name_map or {}
     totals, periods = _count_from_assignment(result_df, COL_NEW_MANAGER, support_managers)
 
     locked_paid_mask = (result_df[COL_NEW_MANAGER].isin(support_managers)) & (result_df[COL_PAID] == 1)
@@ -508,6 +591,7 @@ def _build_summary(
         cap = cap_map.get(manager)
         rows.append(
             {
+                "name": name_map.get(manager, manager),
                 "manager": manager,
                 "has_cap": cap not in (None, 0),
                 "cap_value": "" if cap in (None, 0) else int(cap),
@@ -527,7 +611,7 @@ def _build_summary(
             }
         )
 
-    return pd.DataFrame(rows).sort_values(by=["has_cap", "manager"], ascending=[False, True])
+    return pd.DataFrame(rows).sort_values(by=["has_cap", "name"], ascending=[False, True])
 
 
 def _build_checks(
@@ -569,7 +653,7 @@ def _build_checks(
             if row["fact_total"] > int(cap) + TOTAL_TOLERANCE:
                 cap_ok = False
                 checks.append(
-                    f"ПРЕВЫШЕН CAP+{TOTAL_TOLERANCE}: {manager} -> факт {row['fact_total']}, cap {cap}"
+                    f"ПРЕВЫШЕН CAP+{TOTAL_TOLERANCE}: {row['name']} -> факт {row['fact_total']}, cap {cap}"
                 )
     if cap_ok:
         checks.append(f"Все cap соблюдены с допуском +{TOTAL_TOLERANCE}: ДА")
@@ -594,18 +678,22 @@ def _build_checks(
 
 
 def distribute_cash_registers(df: pd.DataFrame, managers_config: Dict) -> DistributionResult:
-    work = _validate_and_prepare_df(df)
+    prepared = _validate_and_prepare_df(df)
 
-    managers_config = ensure_managers_present(
-        managers_config,
-        work[COL_MANAGER].dropna().astype(str).str.strip().tolist(),
-    )
+    managers_config = ensure_managers_present(managers_config, managers_from_df(prepared))
 
     support_managers = get_support_managers(managers_config)
     if not support_managers:
-        raise ValueError("В конфиге нет ни одного support-менеджера.")
+        raise ValueError("В конфиге нет ни одного support-менеджера с почтой.")
 
     cap_map = get_cap_map(managers_config)
+    name_map = get_name_map(managers_config, prepared)
+
+    # Frozen rows (terminated, unknown status) stay where they are and skip balancing
+    frozen_mask = prepared[COL_FROZEN] != ""
+    work = prepared.loc[~frozen_mask].copy()
+    frozen = prepared.loc[frozen_mask].copy()
+    frozen[COL_NEW_MANAGER] = frozen[COL_MANAGER]
 
     total_targets = _compute_total_targets(
         total_rows=len(work),
@@ -642,18 +730,17 @@ def distribute_cash_registers(df: pd.DataFrame, managers_config: Dict) -> Distri
         cap_map=cap_map,
         total_targets=total_targets,
         period_targets=period_targets,
+        name_map=name_map,
     )
 
-    moves_df = assigned.loc[
-        assigned[COL_MANAGER] != assigned[COL_NEW_MANAGER],
-        [COL_MANAGER, COL_NEW_MANAGER, COL_TARIFF, COL_PAID],
-    ].copy()
-    moves_df = moves_df.rename(
-        columns={
-            COL_MANAGER: "old_manager",
-            COL_NEW_MANAGER: "new_manager",
-            COL_TARIFF: "tariff",
-            COL_PAID: "paid",
+    moved = assigned.loc[assigned[COL_MANAGER] != assigned[COL_NEW_MANAGER]]
+    moves_df = pd.DataFrame(
+        {
+            "inn": moved[COL_INN] if COL_INN in moved.columns else "",
+            "old_manager": moved[COL_MANAGER_NAME],
+            "new_manager": moved[COL_NEW_MANAGER].map(lambda m: name_map.get(m, m)),
+            "tariff": moved[COL_TARIFF],
+            "paid": moved[COL_PAID],
         }
     )
 
@@ -664,14 +751,35 @@ def distribute_cash_registers(df: pd.DataFrame, managers_config: Dict) -> Distri
         support_managers=support_managers,
         cap_map=cap_map,
     )
+    checks.extend(_frozen_checks(frozen))
+    without_email = get_support_without_email(managers_config)
+    if without_email:
+        checks.append(
+            "Support без почты, в раскладке не участвуют: " + ", ".join(without_email)
+        )
 
-    chart_df = summary_df[["manager", "fact_total", "target_total"]].copy()
+    output_df = pd.concat([assigned, frozen]).sort_index()
+    output_df[COL_NEW_MANAGER_NAME] = output_df[COL_NEW_MANAGER].map(lambda m: name_map.get(m, m))
+    output_df = output_df.drop(columns=[COL_PAID, COL_FROZEN])
+
+    chart_df = summary_df[["name", "fact_total", "target_total"]].rename(columns={"name": "manager"})
 
     return DistributionResult(
-        output_df=assigned,
+        output_df=output_df,
         summary_df=summary_df,
         moves_df=moves_df,
         checks=checks,
         chart_df=chart_df,
         managers_config=managers_config,
     )
+
+
+def _frozen_checks(frozen: pd.DataFrame) -> List[str]:
+    if frozen.empty:
+        return ["Замороженных касс (расторжение / неизвестный статус): 0"]
+
+    lines = [f"Замороженных касс (расторжение / неизвестный статус), не распределены: {len(frozen)}"]
+    for _, row in frozen.iterrows():
+        inn = row[COL_INN] if COL_INN in frozen.columns else ""
+        lines.append(f"  ИНН {inn} — {row[COL_MANAGER_NAME]}: {row[COL_FROZEN]}")
+    return lines

@@ -13,6 +13,9 @@ from logic import (
     distribute_cash_registers,
     ensure_managers_present,
     load_managers_config,
+    manager_key,
+    managers_from_df,
+    read_input_excel,
     save_managers_config,
 )
 
@@ -98,7 +101,7 @@ class KassaDistributionApp(tk.Tk):
 
     def _build_summary_tab(self):
         columns = [
-            "manager", "has_cap", "cap_value", "locked_paid",
+            "name", "manager", "has_cap", "cap_value", "locked_paid",
             "target_total", "fact_total", "delta_total",
             "target_1", "fact_1", "delta_1",
             "target_3", "fact_3", "delta_3",
@@ -107,7 +110,7 @@ class KassaDistributionApp(tk.Tk):
         self.summary_tree = self._create_tree(self.summary_tab, columns)
 
     def _build_moves_tab(self):
-        columns = ["old_manager", "new_manager", "tariff", "paid"]
+        columns = ["inn", "old_manager", "new_manager", "tariff", "paid"]
         self.moves_tree = self._create_tree(self.moves_tab, columns)
 
     def _build_checks_tab(self):
@@ -133,13 +136,14 @@ class KassaDistributionApp(tk.Tk):
         paned.add(left, weight=4)
         paned.add(right, weight=2)
 
-        self.managers_tree = self._create_tree(left, ["name", "is_support", "has_cap", "cap"], selectmode="extended")
+        self.managers_tree = self._create_tree(left, ["name", "email", "is_support", "has_cap", "cap"], selectmode="extended")
         self.managers_tree.bind("<<TreeviewSelect>>", self.on_manager_select)
 
         editor = ttk.LabelFrame(right, text="Редактор менеджера", padding=12)
         editor.pack(fill="x", pady=(0, 12))
 
         self.name_var = tk.StringVar()
+        self.email_var = tk.StringVar()
         self.is_support_var = tk.BooleanVar(value=False)
         self.has_cap_var = tk.BooleanVar(value=False)
         self.cap_var = tk.StringVar()
@@ -147,6 +151,10 @@ class KassaDistributionApp(tk.Tk):
         ttk.Label(editor, text="Имя").pack(anchor="w")
         self.name_entry = ttk.Entry(editor, textvariable=self.name_var)
         self.name_entry.pack(fill="x", pady=(4, 10))
+
+        ttk.Label(editor, text="Почта (ключ, как в выгрузке)").pack(anchor="w")
+        self.email_entry = ttk.Entry(editor, textvariable=self.email_var)
+        self.email_entry.pack(fill="x", pady=(4, 10))
 
         ttk.Checkbutton(
             editor,
@@ -180,9 +188,11 @@ class KassaDistributionApp(tk.Tk):
 
         hint = (
             "Логика:\n"
+            "• менеджер определяется по почте\n"
             "• paid на support не двигаются\n"
             "• paid/unpaid с non-support уходят на support\n"
             "• unpaid внутри support двигаются минимально\n"
+            "• расторжения и незнакомые статусы не двигаются\n"
             f"• допуски: total ±5, тарифы ±3"
         )
         ttk.Label(right, text=hint, justify="left").pack(anchor="w", pady=(12, 0))
@@ -210,7 +220,7 @@ class KassaDistributionApp(tk.Tk):
             tree.heading(col, text=col)
             tree.column(col, width=120, anchor="center")
 
-        wide_cols = {"manager", "name", "old_manager", "new_manager"}
+        wide_cols = {"manager", "name", "email", "old_manager", "new_manager"}
         for col in columns:
             if col in wide_cols:
                 tree.column(col, width=280, anchor="w")
@@ -226,17 +236,14 @@ class KassaDistributionApp(tk.Tk):
             return
 
         try:
-            df = pd.read_excel(path)
+            df = read_input_excel(path)
             self.input_df = df
             self.input_path = path
             self.file_var.set(os.path.basename(path))
             self.status_var.set("Excel загружен")
 
             if COL_MANAGER in df.columns:
-                self.managers_config = ensure_managers_present(
-                    self.managers_config,
-                    df[COL_MANAGER].dropna().astype(str).str.strip().tolist(),
-                )
+                self.managers_config = ensure_managers_present(self.managers_config, managers_from_df(df))
                 self._refresh_managers_tree()
 
         except Exception as e:
@@ -251,10 +258,7 @@ class KassaDistributionApp(tk.Tk):
             messagebox.showerror("Ошибка", f"В Excel нет колонки '{COL_MANAGER}'.")
             return
 
-        self.managers_config = ensure_managers_present(
-            self.managers_config,
-            self.input_df[COL_MANAGER].dropna().astype(str).str.strip().tolist(),
-        )
+        self.managers_config = ensure_managers_present(self.managers_config, managers_from_df(self.input_df))
         self._refresh_managers_tree()
         self.status_var.set("Менеджеры подтянуты из Excel")
 
@@ -271,8 +275,7 @@ class KassaDistributionApp(tk.Tk):
             self.managers_config = load_managers_config(self.config_path)
             if self.input_df is not None and COL_MANAGER in self.input_df.columns:
                 self.managers_config = ensure_managers_present(
-                    self.managers_config,
-                    self.input_df[COL_MANAGER].dropna().astype(str).str.strip().tolist(),
+                    self.managers_config, managers_from_df(self.input_df)
                 )
             self._refresh_managers_tree()
             self.status_var.set("managers.json перезагружен")
@@ -332,7 +335,7 @@ class KassaDistributionApp(tk.Tk):
             tree.heading(col, text=col)
             width = 120
             anchor = "center"
-            if col in {"manager", "name", "old_manager", "new_manager"}:
+            if col in {"manager", "name", "email", "old_manager", "new_manager"}:
                 width = 280
                 anchor = "w"
             tree.column(col, width=width, anchor=anchor)
@@ -385,12 +388,13 @@ class KassaDistributionApp(tk.Tk):
             rows.append(
                 {
                     "name": item.get("name", ""),
+                    "email": item.get("email", ""),
                     "is_support": "Да" if item.get("is_support") else "Нет",
                     "has_cap": "Да" if item.get("has_cap") else "Нет",
                     "cap": item.get("cap", "") if item.get("has_cap") else "",
                 }
             )
-        df = pd.DataFrame(rows, columns=["name", "is_support", "has_cap", "cap"])
+        df = pd.DataFrame(rows, columns=["name", "email", "is_support", "has_cap", "cap"])
         self._refresh_tree_data(self.managers_tree, df)
 
     def on_manager_select(self, _event=None):
@@ -402,21 +406,25 @@ class KassaDistributionApp(tk.Tk):
             values = self.managers_tree.item(selected[0], "values")
             if not values:
                 return
-            name, is_support, has_cap, cap = values
+            name, email, is_support, has_cap, cap = values
             self.name_var.set(str(name))
+            self.email_var.set(str(email))
             self.name_entry.configure(state="normal")
+            self.email_entry.configure(state="normal")
             self.is_support_var.set(str(is_support) == "Да")
             self.has_cap_var.set(str(has_cap) == "Да")
             self.cap_var.set("" if cap in (None, "", "nan") else str(cap))
         else:
             self.name_var.set(f"(выбрано {len(selected)})")
+            self.email_var.set("")
             self.name_entry.configure(state="disabled")
+            self.email_entry.configure(state="disabled")
 
             is_support_vals, has_cap_vals, cap_vals = set(), set(), set()
             for item_id in selected:
                 values = self.managers_tree.item(item_id, "values")
                 if values:
-                    _, is_support, has_cap, cap = values
+                    _, _, is_support, has_cap, cap = values
                     is_support_vals.add(str(is_support) == "Да")
                     has_cap_vals.add(str(has_cap) == "Да")
                     cap_vals.add("" if cap in (None, "", "nan") else str(cap))
@@ -435,8 +443,12 @@ class KassaDistributionApp(tk.Tk):
             self.cap_var.set("")
 
     def clear_manager_form(self):
+        # Clear the selection, otherwise "add / update" would overwrite the selected entry
+        self.managers_tree.selection_remove(self.managers_tree.selection())
         self.name_var.set("")
+        self.email_var.set("")
         self.name_entry.configure(state="normal")
+        self.email_entry.configure(state="normal")
         self.is_support_var.set(False)
         self.has_cap_var.set(False)
         self.cap_var.set("")
@@ -461,18 +473,12 @@ class KassaDistributionApp(tk.Tk):
                 return
 
         if len(selected) > 1:
-            names = [
-                str(self.managers_tree.item(iid, "values")[0])
-                for iid in selected
-                if self.managers_tree.item(iid, "values")
-            ]
-            for manager_name in names:
-                for item in self.managers_config.get("managers", []):
-                    if str(item.get("name", "")).strip().lower() == manager_name.lower():
-                        item["is_support"] = self.is_support_var.get()
-                        item["has_cap"] = has_cap
-                        item["cap"] = cap if has_cap else None
-                        break
+            names = self._selected_keys(selected)
+            for item in self.managers_config.get("managers", []):
+                if manager_key(item) in names:
+                    item["is_support"] = self.is_support_var.get()
+                    item["has_cap"] = has_cap
+                    item["cap"] = cap if has_cap else None
             self.managers_config["managers"] = sorted(
                 self.managers_config["managers"],
                 key=lambda x: str(x.get("name", "")).lower(),
@@ -482,22 +488,40 @@ class KassaDistributionApp(tk.Tk):
             return
 
         name = self.name_var.get().strip()
-        if not name:
-            messagebox.showwarning("Внимание", "Укажи имя менеджера.")
+        email = self.email_var.get().strip().lower()
+        if not email:
+            messagebox.showwarning("Внимание", "Укажи почту менеджера — по ней он ищется в выгрузке.")
             return
 
         payload = {
-            "name": name,
+            "name": name or email,
+            "email": email,
             "is_support": self.is_support_var.get(),
             "has_cap": has_cap,
             "cap": cap if has_cap else None,
         }
 
+        # Update the selected entry (lets a legacy entry without email get one),
+        # else the entry with this email, else add a new one.
+        selected_keys = self._selected_keys(selected)
         existing = None
         for item in self.managers_config.get("managers", []):
-            if str(item.get("name", "")).strip().lower() == name.lower():
+            if manager_key(item) in selected_keys:
                 existing = item
                 break
+        if existing is None:
+            for item in self.managers_config.get("managers", []):
+                if str(item.get("email", "")).strip().lower() == email:
+                    existing = item
+                    break
+
+        duplicate = any(
+            item is not existing and str(item.get("email", "")).strip().lower() == email
+            for item in self.managers_config.get("managers", [])
+        )
+        if duplicate:
+            messagebox.showwarning("Внимание", f"Почта {email} уже есть у другого менеджера.")
+            return
 
         if existing is not None:
             existing.update(payload)
@@ -511,6 +535,15 @@ class KassaDistributionApp(tk.Tk):
         self._refresh_managers_tree()
         self.status_var.set("Менеджер сохранён")
 
+    def _selected_keys(self, selected) -> set:
+        """Keys of the selected rows: email, or name for entries without email."""
+        keys = set()
+        for iid in selected:
+            values = self.managers_tree.item(iid, "values")
+            if values:
+                keys.add(manager_key({"name": str(values[0]), "email": str(values[1])}))
+        return keys
+
     def delete_selected_manager(self):
         selected = self.managers_tree.selection()
         if not selected:
@@ -522,6 +555,7 @@ class KassaDistributionApp(tk.Tk):
             for iid in selected
             if self.managers_tree.item(iid, "values")
         ]
+        keys = self._selected_keys(selected)
         if not names:
             return
 
@@ -536,10 +570,9 @@ class KassaDistributionApp(tk.Tk):
         if not confirm:
             return
 
-        names_lower = {n.lower() for n in names}
         self.managers_config["managers"] = [
             x for x in self.managers_config.get("managers", [])
-            if str(x.get("name", "")).strip().lower() not in names_lower
+            if manager_key(x) not in keys
         ]
         self._refresh_managers_tree()
         self.clear_manager_form()

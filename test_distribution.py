@@ -5,36 +5,52 @@ import random
 import pandas as pd
 
 import logic
-from logic import COL_MANAGER, COL_NEW_MANAGER, COL_PAID, COL_TARIFF, VALID_TARIFFS
+from logic import (
+    COL_INN,
+    COL_MANAGER,
+    COL_MANAGER_NAME,
+    COL_NEW_MANAGER,
+    COL_NEW_MANAGER_NAME,
+    COL_STATUS,
+    COL_TARIFF,
+    COL_TERMINATION,
+    VALID_TARIFFS,
+)
 
 
 def make_case(seed, rows=1200, support=10, external=3, caps=None, paid_share=0.4):
     """Выгрузка с перекошенной нагрузкой — её и должно выровнять."""
     rnd = random.Random(seed)
     caps = caps or {}
-    support_names = [f"Support {i:02d}" for i in range(support)]
-    external_names = [f"Sales {i:02d}" for i in range(external)]
+    support_names = [f"support{i:02d}@cp.ru" for i in range(support)]
+    external_names = [f"sales{i:02d}@cp.ru" for i in range(external)]
     weights = [6.0 ** rnd.random() for _ in support_names]
     weights += [sum(weights) * 0.25 / max(external, 1)] * external
 
-    df = pd.DataFrame([
-        {
-            COL_MANAGER: rnd.choices(support_names + external_names, weights=weights)[0],
-            COL_TARIFF: rnd.choices(VALID_TARIFFS, weights=[0.6, 0.25, 0.15])[0],
-            COL_PAID: 1 if rnd.random() < paid_share else 0,
-        }
-        for _ in range(rows)
-    ])
+    rows_data = []
+    for i in range(rows):
+        email = rnd.choices(support_names + external_names, weights=weights)[0]
+        rows_data.append(
+            {
+                COL_MANAGER_NAME: email.split("@")[0].title(),
+                COL_MANAGER: email,
+                COL_INN: f"{i:012d}",
+                COL_TARIFF: rnd.choices(VALID_TARIFFS, weights=[0.6, 0.25, 0.15])[0],
+                COL_STATUS: "paid" if rnd.random() < paid_share else "topay",
+                COL_TERMINATION: None,
+            }
+        )
+    df = pd.DataFrame(rows_data)
 
-    config = {"version": 1, "managers": []}
-    for i, name in enumerate(support_names):
+    config = {"version": 2, "managers": []}
+    for i, email in enumerate(support_names):
         cap = caps.get(i)
         config["managers"].append(
-            {"name": name, "is_support": True, "has_cap": cap is not None, "cap": cap}
+            {"email": email, "name": email, "is_support": True, "has_cap": cap is not None, "cap": cap}
         )
-    for name in external_names:
+    for email in external_names:
         config["managers"].append(
-            {"name": name, "is_support": False, "has_cap": False, "cap": None}
+            {"email": email, "name": email, "is_support": False, "has_cap": False, "cap": None}
         )
     return df, config, support_names
 
@@ -63,10 +79,10 @@ def test_swaps_never_change_totals():
     """Обмены этапа 2 сохраняют количество касс у каждого — иначе этап 1 напрасен."""
     df, config, support_names = make_case(7)
     work = logic._validate_and_prepare_df(df)
-    config = logic.ensure_managers_present(config, work[COL_MANAGER].tolist())
+    config = logic.ensure_managers_present(config, logic.managers_from_df(work))
     cap_map = logic.get_cap_map(config)
 
-    locked = work.loc[work[COL_MANAGER].isin(support_names) & (work[COL_PAID] == 1)]
+    locked = work.loc[work[COL_MANAGER].isin(support_names) & (work[logic.COL_PAID] == 1)]
     targets = logic._compute_total_targets(
         len(work),
         support_names,
@@ -90,7 +106,7 @@ def test_paid_frozen_and_nothing_lost():
     assert len(result) == len(df), "потеряны или задвоены строки"
     assert result[COL_NEW_MANAGER].isin(support_names).all(), "касса осталась вне сопровождения"
 
-    was_paid_on_support = result[COL_MANAGER].isin(support_names) & (result[COL_PAID] == 1)
+    was_paid_on_support = result[COL_MANAGER].isin(support_names) & (result[COL_STATUS] == "paid")
     moved = result.loc[was_paid_on_support, COL_MANAGER] != result.loc[was_paid_on_support, COL_NEW_MANAGER]
     assert not moved.any(), "оплаченная касса сдвинута с менеджера сопровождения"
 
@@ -104,6 +120,57 @@ def test_caps_respected():
         assert fact <= cap + logic.TOTAL_TOLERANCE, (
             f"{support_names[index]}: факт {fact} против cap {cap}"
         )
+
+
+def test_frozen_rows_stay_and_skip_balancing():
+    """Terminated or unknown-status rows stay put and do not count towards the load."""
+    df, config, support_names = make_case(6)
+    df.loc[0, COL_MANAGER] = "sales00@cp.ru"
+    df.loc[0, COL_TERMINATION] = "15.11.2026"
+    df.loc[1, COL_STATUS] = "refund"
+    df.loc[1, COL_TERMINATION] = None
+
+    res = logic.distribute_cash_registers(df, config)
+    out = res.output_df
+
+    assert len(out) == len(df), "потеряны или задвоены строки"
+    for i in (0, 1):
+        assert out.loc[i, COL_NEW_MANAGER] == out.loc[i, COL_MANAGER], f"строка {i} сдвинута"
+    assert int(res.summary_df["fact_total"].sum()) == len(df) - 2, "замороженные посчитаны в нагрузке"
+    assert int(res.summary_df["delta_total"].abs().max()) == 0
+    assert any("refund" in c for c in res.checks), "незнакомый статус не попал в checks"
+    assert any("расторжение" in c for c in res.checks), "расторжение не попало в checks"
+    assert "_paid" not in out.columns and "_frozen_reason" not in out.columns
+    assert out[COL_NEW_MANAGER_NAME].notna().all()
+
+
+def test_legacy_config_gets_email_by_exact_name():
+    legacy = {"version": 1, "managers": [
+        {"name": "Иванов Иван", "is_support": True, "has_cap": True, "cap": 150},
+        {"name": "Ушедший Человек", "is_support": True, "has_cap": False, "cap": None},
+    ]}
+    merged = logic.ensure_managers_present(
+        legacy, [("I.Ivanov@cp.ru", "Иванов Иван"), ("p.petrov@cp.ru", "Петров Пётр")]
+    )
+    by_name = {m["name"]: m for m in merged["managers"]}
+    assert by_name["Иванов Иван"]["email"] == "i.ivanov@cp.ru"
+    assert by_name["Иванов Иван"]["cap"] == 150
+    assert by_name["Петров Пётр"]["is_support"] is False
+    assert logic.get_support_managers(merged) == ["i.ivanov@cp.ru"]
+    assert logic.get_support_without_email(merged) == ["Ушедший Человек"]
+
+
+def test_inn_keeps_leading_zero():
+    import os
+    import tempfile
+
+    df, _, _ = make_case(8, rows=5)
+    df.loc[0, COL_INN] = "071303241361"
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "in.xlsx")
+        df.to_excel(path, index=False)
+        back = logic.read_input_excel(path)
+    assert back.loc[0, COL_INN] == "071303241361"
 
 
 if __name__ == "__main__":
