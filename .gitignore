@@ -28,9 +28,13 @@ managers.json
 # node
 node_modules/
 dist/
+dist-e2e/
 dist-ssr/
 *.local
 
 # tauri
 src-tauri/target/
 src-tauri/gen/
+
+# local tooling
+.claude/
