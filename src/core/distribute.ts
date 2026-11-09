@@ -310,20 +310,11 @@ export function exactTotalFill(
       let best: string;
       if (candidates.length > 0) {
         // Who needs this tariff more; on a tie, whose overall shortfall is larger; then the larger email.
-        const key = (m: string): [number, number] => [
-          required(periodTargets.get(m))[tariff] - required(perTariff.get(m))[tariff],
-          required(deficit.get(m)),
-        ];
+        const need = (m: string) => required(periodTargets.get(m))[tariff] - required(perTariff.get(m))[tariff];
+        const rank = (a: string, b: string): number =>
+          need(a) - need(b) || required(deficit.get(a)) - required(deficit.get(b)) || cmpStr(a, b);
         best = candidates[0]!;
-        let bestKey = key(best);
-        for (let c = 1; c < candidates.length; c++) {
-          const m = candidates[c]!;
-          const k = key(m);
-          if (k[0] > bestKey[0] || (k[0] === bestKey[0] && (k[1] > bestKey[1] || (k[1] === bestKey[1] && cmpStr(m, best) > 0)))) {
-            best = m;
-            bestKey = k;
-          }
-        }
+        for (const m of candidates) if (rank(m, best) > 0) best = m;
       } else {
         // The targets did not hold everything (every cap is too low). The register is not lost:
         // it goes to the least loaded manager. The checks log will show it.
