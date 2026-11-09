@@ -1,0 +1,30 @@
+{
+  "name": "kassa-distributor",
+  "private": true,
+  "version": "2.0.0",
+  "type": "module",
+  "description": "Cash-register distribution tool: TypeScript logic, Tauri shell",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc",
+    "test": "vitest run",
+    "compare": "node scripts/compare-with-reference.ts",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.12.4",
+    "@tauri-apps/plugin-dialog": "^2.8.4",
+    "@tauri-apps/plugin-fs": "^2.7.1",
+    "read-excel-file": "^9.3.14",
+    "write-excel-file": "^4.1.1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.4",
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.7",
+    "vitest": "^5.1.0"
+  }
+}

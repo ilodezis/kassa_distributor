@@ -24,3 +24,13 @@ venv/
 # sensitive data
 managers.json
 .venv/
+
+# node
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# tauri
+src-tauri/target/
+src-tauri/gen/
