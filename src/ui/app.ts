@@ -5,6 +5,8 @@ import {
   type ManagersConfig,
   defaultConfig,
   ensureManagersPresent,
+  getSupportManagers,
+  getSupportWithoutEmail,
   parseManagersConfig,
   serializeManagersConfig,
 } from "../core/config.ts";
@@ -149,8 +151,17 @@ export async function createApp(root: HTMLElement, platform: Platform): Promise<
     }
     config = ensureManagersPresent(config, managersFromTable(table));
     managersTab.refresh();
-    setStatus("Менеджеры подтянуты из Excel");
+    guideToManagers("Менеджеры подтянуты из Excel");
     void persistConfig();
+  }
+
+  /**
+   * Once the export's managers are in, the next step is theirs: pulled-in managers are not support by default,
+   * and the Summary tab stays empty until the distribution runs. Show the list instead of an empty tab.
+   */
+  function guideToManagers(status: string): void {
+    selectTab("managers");
+    setStatus(getSupportManagers(config).length === 0 ? `${status}. Отметь support-менеджеров и запусти распределение` : status);
   }
 
   async function reloadConfig(): Promise<void> {
@@ -209,6 +220,7 @@ export async function createApp(root: HTMLElement, platform: Platform): Promise<
     if (next.columns.includes(COL_MANAGER)) {
       config = ensureManagersPresent(config, managersFromTable(next));
       managersTab.refresh();
+      guideToManagers("Excel загружен");
       await persistConfig();
     }
   }
@@ -238,6 +250,17 @@ export async function createApp(root: HTMLElement, platform: Platform): Promise<
   function run(): void {
     if (table === null) {
       void showMessage("warning", "Внимание", "Сначала загрузи Excel.");
+      return;
+    }
+    if (getSupportManagers(config).length === 0) {
+      const withoutEmail = getSupportWithoutEmail(config);
+      const note = withoutEmail.length > 0 ? `\n\nSupport без почты в раскладке не участвуют: ${withoutEmail.join(", ")}. Впиши им почту из выгрузки.` : "";
+      selectTab("managers");
+      void showMessage(
+        "warning",
+        "Внимание",
+        `Не отмечено ни одного support-менеджера с почтой.\nВыбери в списке тех, кто принимает кассы, поставь галочку «Участвует в сопровождении» и нажми «Добавить / обновить». Потом запусти распределение снова.${note}`,
+      );
       return;
     }
     try {

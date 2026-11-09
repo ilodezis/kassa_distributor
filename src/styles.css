@@ -464,6 +464,14 @@ table.data tbody tr.attention td {
   color: var(--muted);
 }
 
+.banner {
+  margin: 0 0 8px;
+  padding: 8px 12px;
+  color: var(--warn);
+  background: var(--warn-soft);
+  border-radius: var(--radius);
+}
+
 .managers-side {
   display: flex;
   flex-direction: column;

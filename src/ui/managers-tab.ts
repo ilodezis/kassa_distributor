@@ -1,6 +1,6 @@
 // The "Менеджеры" tab: the list of managers with multi-select, and the editor next to it.
 
-import { type ManagerEntry, type ManagersConfig, managerKey } from "../core/config.ts";
+import { type ManagerEntry, type ManagersConfig, getSupportManagers, managerKey } from "../core/config.ts";
 import { PERIOD_TOLERANCE, TOTAL_TOLERANCE } from "../core/constants.ts";
 import { deleteManagers, saveManager } from "../core/editor.ts";
 import { type Column, dataTable } from "./datatable.ts";
@@ -120,6 +120,14 @@ export function createManagersTab(host: ManagersTabHost): { el: HTMLElement; ref
     listHost.replaceChildren(table.el);
     if (items.length === 0) {
       listHost.append(h("p", { class: "empty-note" }, "Менеджеров пока нет. Загрузи Excel — они подтянутся из выгрузки."));
+    } else if (getSupportManagers(host.config()).length === 0) {
+      listHost.prepend(
+        h(
+          "p",
+          { class: "banner", role: "status" },
+          "Support-менеджеры не отмечены, распределять некого. Выбери в списке тех, кто принимает кассы, и поставь галочку «Участвует в сопровождении».",
+        ),
+      );
     }
     table.el.scrollTop = previousScroll;
   }
