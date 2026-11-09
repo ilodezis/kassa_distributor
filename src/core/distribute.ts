@@ -1,10 +1,9 @@
 // The two-stage allocation of cash registers between support managers.
 //
-// This is a line-by-line port of the reference implementation (`reference/logic.py`).
-// The result must match it row by row, so the traversal order of rows and managers and every
-// tie-breaker (largest remainder, stage 1 choice of the receiver, stage 2 pair order) are kept
-// exactly as they are there. Do not "improve" an ordering here without re-running
-// `npm run compare` against the reference.
+// This is a line-by-line port of the original Python implementation. The traversal order of
+// rows and managers and every tie-breaker (largest remainder, stage 1 choice of the receiver,
+// stage 2 pair order) are kept exactly as they were there. Do not "improve" an ordering here
+// without updating the golden files in tests/golden on purpose.
 
 import {
   type ManagersConfigInput,

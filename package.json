@@ -10,7 +10,6 @@
     "preview": "vite preview",
     "typecheck": "tsc",
     "test": "vitest run",
-    "compare": "node scripts/compare-with-reference.ts",
     "tauri": "tauri"
   },
   "dependencies": {

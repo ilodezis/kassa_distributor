@@ -11,7 +11,7 @@ export const COL_TERMINATION = "Дата расторжения";
 export const COL_NEW_MANAGER = "Почта нового менеджера";
 export const COL_NEW_MANAGER_NAME = "Новый менеджер";
 
-// Internal columns of the reference implementation, dropped from the result
+// Internal columns of the original implementation, dropped from the result
 export const COL_PAID = "_paid";
 export const COL_FROZEN = "_frozen_reason";
 

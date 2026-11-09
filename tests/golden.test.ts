@@ -1,6 +1,6 @@
-// The port against what the Python reference produced for small synthetic exports.
-// Regenerate with `node scripts/make-golden.ts` (needs Python with pandas) only when the
-// reference itself changes on purpose.
+// Frozen expectations for small synthetic exports, originally produced by the Python
+// implementation this app was ported from. Update them by hand only when the distribution
+// rules change on purpose.
 
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -25,7 +25,7 @@ interface Golden {
 const dir = fileURLToPath(new URL("./golden/", import.meta.url));
 const files = readdirSync(dir).filter((f) => f.endsWith(".json"));
 
-describe("golden files from the Python reference", () => {
+describe("golden files", () => {
   it("are present", () => {
     expect(files.length).toBeGreaterThanOrEqual(4);
   });
