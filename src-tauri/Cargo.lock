@@ -1757,7 +1757,7 @@ dependencies = [
 
 [[package]]
 name = "kassa-distributor"
-version = "3.0.0"
+version = "3.0.1"
 dependencies = [
  "serde_json",
  "tauri",
