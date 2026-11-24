@@ -23,6 +23,36 @@ export interface Platform {
   writeConfig(text: string): Promise<void>;
   /** Where the config lives, for display. */
   describeConfigLocation(): Promise<string>;
+  /** Over-the-air updates. null where the app cannot update itself (the browser build). */
+  updates: Updates | null;
+}
+
+export interface UpdateProgress {
+  downloaded: number;
+  /** Size of the package in bytes, null when the server did not say. */
+  total: number | null;
+}
+
+export interface AvailableUpdate {
+  version: string;
+  currentVersion: string;
+  /** Release notes, "" when the release has none. */
+  notes: string;
+  /**
+   * Downloads the package, checks its signature against the key built into the app and
+   * installs it. On Windows the installer closes the app itself once it starts.
+   */
+  install(onProgress: (progress: UpdateProgress) => void): Promise<void>;
+  /** Releases the update when the user postpones it. */
+  dispose(): Promise<void>;
+}
+
+export interface Updates {
+  currentVersion(): Promise<string>;
+  /** The newer release, or null when this version is the latest. */
+  check(): Promise<AvailableUpdate | null>;
+  /** Restarts into the installed version. */
+  restart(): Promise<void>;
 }
 
 export const CONFIG_FILE = "managers.json";

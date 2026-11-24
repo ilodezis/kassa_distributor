@@ -13,13 +13,20 @@ import {
 import { COL_MANAGER } from "../core/constants.ts";
 import { type DistributionResult, type MoveRow, type SummaryRow, distribute } from "../core/distribute.ts";
 import { type Table, managersFromTable } from "../core/table.ts";
-import { buildResultWorkbook, readInputTable } from "../core/xlsx.ts";
+import { buildResultWorkbook, buildTransferWorkbook, parseTransferDate, readInputTable } from "../core/xlsx.ts";
 import type { Platform } from "../platform/types.ts";
 import { renderChart } from "./chart.ts";
 import { type Column, dataTable } from "./datatable.ts";
-import { confirmDialog, showMessage } from "./dialogs.ts";
+import { confirmDialog, pickDateDialog, showMessage, todayIso } from "./dialogs.ts";
 import { clear, h } from "./dom.ts";
 import { createManagersTab } from "./managers-tab.ts";
+import { createUpdateController } from "./update-controller.ts";
+import { createUpdateView } from "./update-view.ts";
+
+// The first background check waits for the window to settle; then once every few hours,
+// for a window that stays open all week.
+const FIRST_UPDATE_CHECK_MS = 5_000;
+const UPDATE_CHECK_EVERY_MS = 6 * 60 * 60 * 1000;
 
 type TabId = "summary" | "moves" | "checks" | "chart" | "managers";
 
@@ -83,6 +90,19 @@ function resultName(sourceName: string): string {
   return `${sourceName.replace(/\.xlsx$/i, "")}-result.xlsx`;
 }
 
+/** Russian noun form for a count: 1 касса, 2 кассы, 5 касс. */
+export function pluralRu(n: number, one: string, few: string, many: string): string {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return one;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
+  return many;
+}
+
+function transferName(sourceName: string, date: string): string {
+  return `${sourceName.replace(/\.xlsx$/i, "")}-переносы-${date}.xlsx`;
+}
+
 export interface AppHandle {
   /** Loads an already parsed export, as if it had been picked from disk. */
   loadTable(table: Table, name: string): Promise<void>;
@@ -91,6 +111,8 @@ export interface AppHandle {
   run(): void;
   /** The result workbook that "Сохранить результат" would write. */
   exportResult(): Promise<Uint8Array>;
+  /** The transfer file that "Сохранить переносы" would write for a `YYYY-MM-DD` date. */
+  exportTransfers(date: string): Promise<Uint8Array>;
 }
 
 export async function createApp(root: HTMLElement, platform: Platform): Promise<AppHandle> {
@@ -98,6 +120,8 @@ export async function createApp(root: HTMLElement, platform: Platform): Promise<
   let table: Table | null = null;
   let fileName: string | null = null;
   let last: { result: DistributionResult; sourceName: string } | null = null;
+  // Whether `last` has been written to disk: a restart for an update would lose it otherwise.
+  let resultSaved = true;
 
   const fileLabel = h("span", { class: "file-label" }, "Файл не загружен");
   const statusLabel = h("span", { class: "status", role: "status", "aria-live": "polite" }, "Готово");
@@ -247,6 +271,11 @@ export async function createApp(root: HTMLElement, platform: Platform): Promise<
     return new Uint8Array(await (await buildResultWorkbook(last.result)).arrayBuffer());
   }
 
+  async function exportTransfers(date: string): Promise<Uint8Array> {
+    if (last === null) throw new Error("Сначала запусти распределение.");
+    return new Uint8Array(await (await buildTransferWorkbook(last.result.moves, parseTransferDate(date))).arrayBuffer());
+  }
+
   function run(): void {
     if (table === null) {
       void showMessage("warning", "Внимание", "Сначала загрузи Excel.");
@@ -266,6 +295,7 @@ export async function createApp(root: HTMLElement, platform: Platform): Promise<
     try {
       const result = distribute(table, config);
       last = { result, sourceName: fileName ?? "result.xlsx" };
+      resultSaved = false;
       renderResult(result);
       setStatus("Распределение завершено");
       selectTab("summary");
@@ -282,10 +312,38 @@ export async function createApp(root: HTMLElement, platform: Platform): Promise<
     try {
       const path = await platform.saveExcel(resultName(last.sourceName), await exportResult());
       if (path === null) return;
+      resultSaved = true;
       setStatus("Результат сохранён");
       await showMessage("info", "Готово", `Результат сохранён:\n${path}`);
     } catch (error) {
       await showMessage("error", "Ошибка", `Не удалось сохранить результат:\n${errorText(error)}`);
+    }
+  }
+
+  async function saveTransfers(): Promise<void> {
+    if (last === null) {
+      await showMessage("warning", "Внимание", "Сначала запусти распределение.");
+      return;
+    }
+    const count = last.result.moves.length;
+    if (count === 0) {
+      await showMessage("info", "Переносов нет", "Все кассы уже стоят где нужно, файл переносов пустой.");
+      return;
+    }
+    const date = await pickDateDialog(
+      "Сохранить переносы",
+      `В файле ${count.toLocaleString("ru-RU")} ${pluralRu(count, "касса", "кассы", "касс")}: ИНН, почта нового менеджера и дата переноса.`,
+      todayIso(),
+      "Сохранить",
+    );
+    if (date === null) return;
+    try {
+      const path = await platform.saveExcel(transferName(last.sourceName, date), await exportTransfers(date));
+      if (path === null) return;
+      setStatus("Переносы сохранены");
+      await showMessage("info", "Готово", `Файл переносов сохранён:\n${path}`);
+    } catch (error) {
+      await showMessage("error", "Ошибка", `Не удалось сохранить переносы:\n${errorText(error)}`);
     }
   }
 
@@ -334,6 +392,7 @@ export async function createApp(root: HTMLElement, platform: Platform): Promise<
       h("button", { class: "btn", onclick: mergeFromExcel }, "Подтянуть менеджеров из Excel"),
       h("button", { class: "btn btn-primary", onclick: run }, "Запустить распределение"),
       h("button", { class: "btn", onclick: () => void saveResult() }, "Сохранить результат"),
+      h("button", { class: "btn", onclick: () => void saveTransfers() }, "Сохранить переносы"),
     ),
     h("div", { class: "toolbar-info" }, fileLabel, statusLabel),
   );
@@ -350,7 +409,7 @@ export async function createApp(root: HTMLElement, platform: Platform): Promise<
 
     setPanel(
       "summary",
-      h("div", { class: "stats" }, stat("строк в выгрузке", total), stat("в раскладке", inLayout), stat("заморожено", total - inLayout), stat("перемещений", result.moves.length)),
+      h("div", { class: "stats" }, stat("строк в выгрузке", total), stat("в раскладке", inLayout), stat("не участвуют", total - inLayout), stat("перемещений", result.moves.length)),
       dataTable(summaryColumns, result.summary).el,
     );
     setPanel(
@@ -374,7 +433,21 @@ export async function createApp(root: HTMLElement, platform: Platform): Promise<
   setPanel("chart", emptyState("Здесь появится график «факт против таргета»."));
   setPanel("managers", managersTab.el);
 
-  root.append(toolbar, tabBar, h("main", { class: "panels" }, ...TABS.map(({ id }) => panels.get(id)!)));
+  // The tab list holds only tabs; the update notice sits beside it, on the same strip.
+  const tabRow = h("div", { class: "tab-row" }, tabBar);
+
+  if (platform.updates !== null) {
+    const updates = platform.updates;
+    let view: ReturnType<typeof createUpdateView> | null = null;
+    const controller = createUpdateController(updates, (state) => view?.render(state));
+    view = createUpdateView(controller, { hasUnsavedResult: () => last !== null && !resultSaved });
+    view.render(controller.state());
+    tabRow.append(view.chip);
+    setTimeout(() => void controller.check({ silent: true }), FIRST_UPDATE_CHECK_MS);
+    setInterval(() => void controller.check({ silent: true }), UPDATE_CHECK_EVERY_MS);
+  }
+
+  root.append(toolbar, tabRow, h("main", { class: "panels" }, ...TABS.map(({ id }) => panels.get(id)!)));
   selectTab("summary");
 
   // ---- start --------------------------------------------------------------------------------
@@ -396,5 +469,5 @@ export async function createApp(root: HTMLElement, platform: Platform): Promise<
   }
   managersTab.refresh();
 
-  return { loadTable, loadExcelFile, run, exportResult };
+  return { loadTable, loadExcelFile, run, exportResult, exportTransfers };
 }

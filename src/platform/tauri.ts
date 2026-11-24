@@ -4,11 +4,14 @@
 // <bundle identifier>/managers.json), never inside the .app bundle: the bundle is replaced on
 // every update and may be read-only.
 
+import { getVersion } from "@tauri-apps/api/app";
 import { appDataDir, dataDir, join } from "@tauri-apps/api/path";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { exists, mkdir, readFile, readTextFile, writeFile, writeTextFile } from "@tauri-apps/plugin-fs";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { check } from "@tauri-apps/plugin-updater";
 
-import { CONFIG_FILE, type PickedFile, type PickedText, type Platform } from "./types.ts";
+import { type AvailableUpdate, CONFIG_FILE, type PickedFile, type PickedText, type Platform, type Updates } from "./types.ts";
 
 // Where the old Python app kept its managers.json when built for macOS.
 const LEGACY_APP_DIR = "KassaDistributor";
@@ -19,6 +22,39 @@ function baseName(path: string): string {
 
 async function configPath(): Promise<string> {
   return join(await appDataDir(), CONFIG_FILE);
+}
+
+// Where to look, the public key and the anti-downgrade rule (requireSignedVersion) are set in
+// tauri.conf.json, on the Rust side: the page can ask for an update, not choose where it comes from.
+const CHECK_TIMEOUT_MS = 30_000;
+
+function createTauriUpdates(): Updates {
+  return {
+    currentVersion: getVersion,
+
+    async check(): Promise<AvailableUpdate | null> {
+      const update = await check({ timeout: CHECK_TIMEOUT_MS });
+      if (update === null) return null;
+      return {
+        version: update.version,
+        currentVersion: update.currentVersion,
+        notes: update.body?.trim() ?? "",
+        async install(onProgress) {
+          let downloaded = 0;
+          let total: number | null = null;
+          await update.downloadAndInstall((event) => {
+            if (event.event === "Started") total = event.data.contentLength ?? null;
+            else if (event.event === "Progress") downloaded += event.data.chunkLength;
+            else downloaded = total ?? downloaded;
+            onProgress({ downloaded, total });
+          });
+        },
+        dispose: () => update.close(),
+      };
+    },
+
+    restart: relaunch,
+  };
 }
 
 export function createTauriPlatform(): Platform {
@@ -77,5 +113,7 @@ export function createTauriPlatform(): Platform {
     },
 
     describeConfigLocation: configPath,
+
+    updates: createTauriUpdates(),
   };
 }

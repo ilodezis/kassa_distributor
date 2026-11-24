@@ -1,7 +1,7 @@
 {
   "name": "kassa-distributor",
   "private": true,
-  "version": "2.0.0",
+  "version": "3.0.0",
   "type": "module",
   "description": "Cash-register distribution tool: TypeScript logic, Tauri shell",
   "scripts": {
@@ -16,6 +16,8 @@
     "@tauri-apps/api": "^2.12.4",
     "@tauri-apps/plugin-dialog": "^2.8.4",
     "@tauri-apps/plugin-fs": "^2.7.1",
+    "@tauri-apps/plugin-process": "^2.4.0",
+    "@tauri-apps/plugin-updater": "^2.14.1",
     "read-excel-file": "^9.3.14",
     "write-excel-file": "^4.1.1"
   },

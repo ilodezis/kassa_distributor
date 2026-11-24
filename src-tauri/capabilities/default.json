@@ -1,10 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "What the main window may do: pick and save files, keep the managers config in the app data folder.",
+  "description": "What the main window may do: pick and save files, keep the managers config in the app data folder, check for signed updates, install them and restart.",
   "windows": ["main"],
   "permissions": [
     "core:default",
+    "updater:default",
+    "process:allow-restart",
     "dialog:allow-open",
     "dialog:allow-save",
     "fs:allow-read-file",

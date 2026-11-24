@@ -9,6 +9,7 @@ import {
   COL_NEW_MANAGER,
   COL_NEW_MANAGER_NAME,
   COL_STATUS,
+  COL_TARIFF,
   COL_TERMINATION,
   PERIOD_TOLERANCE,
   TOTAL_TOLERANCE,
@@ -128,7 +129,7 @@ describe("distribution invariants", () => {
     expect(result.summary.reduce((sum, r) => sum + r.fact_total, 0)).toBe(table.rows.length - 2);
     expect(worst(result.summary.map((r) => r.delta_total))).toBe(0);
     expect(result.checks.some((c) => c.includes("refund"))).toBe(true);
-    expect(result.checks.some((c) => c.includes("расторжение"))).toBe(true);
+    expect(result.checks.some((c) => c.endsWith(": расторжена"))).toBe(true);
     expect(output.columns).not.toContain("_paid");
     expect(output.columns).not.toContain("_frozen_reason");
     const iName = col(output, COL_NEW_MANAGER_NAME);
@@ -210,16 +211,32 @@ describe("distribution details", () => {
     table.rows[5]![col(table, COL_INN)] = null;
     const { checks } = distribute(table, config);
 
-    const header = checks.find((c) => c.startsWith("Замороженных касс"));
-    expect(header).toBe("Замороженных касс (расторжение / неизвестный статус), не распределены: 2");
+    const header = checks.find((c) => c.startsWith("Не участвуют в распределении"));
+    expect(header).toBe("Не участвуют в распределении, остались на своих менеджерах: 2");
     expect(checks.some((c) => c.includes("неизвестный статус оплаты: 'refund'"))).toBe(true);
-    expect(checks.some((c) => c.startsWith("  ИНН nan — ") && c.endsWith(": расторжение"))).toBe(true);
+    expect(checks.some((c) => c.startsWith("  ИНН nan — ") && c.endsWith(": расторжена"))).toBe(true);
+  });
+
+  it("cancelled registers (any case, both spellings) stay put, skip the load and are not 'unknown'", () => {
+    const { table, config } = makeCase(17, { rows: 30, support: 3, external: 1 });
+    const iStatus = col(table, COL_STATUS);
+    table.rows[2]![iStatus] = "cancelled";
+    table.rows[3]![iStatus] = " Canceled ";
+    table.rows[3]![col(table, COL_TARIFF)] = 7; // a frozen row's tariff is not validated
+    const result = distribute(table, config);
+
+    const iNew = col(result.output, COL_NEW_MANAGER);
+    const iOld = col(result.output, COL_MANAGER);
+    for (const i of [2, 3]) expect(result.output.rows[i]![iNew], `row ${i} moved`).toBe(result.output.rows[i]![iOld]);
+    expect(result.summary.reduce((sum, r) => sum + r.fact_total, 0)).toBe(table.rows.length - 2);
+    expect(result.checks.filter((c) => c.endsWith(": расторжена (cancelled)")).length).toBe(2);
+    expect(result.checks.some((c) => c.includes("неизвестный статус оплаты"))).toBe(false);
   });
 
   it("reports zero frozen registers when there are none", () => {
     const { table, config } = makeCase(16, { rows: 30, support: 3, external: 1 });
     const { checks } = distribute(table, config);
-    expect(checks).toContain("Замороженных касс (расторжение / неизвестный статус): 0");
+    expect(checks).toContain("Не участвуют в распределении: 0");
     expect(checks.filter((c) => c.includes("ДА") || c.includes("НЕТ")).length).toBeGreaterThanOrEqual(4);
   });
 

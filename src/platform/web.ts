@@ -1,7 +1,9 @@
 // Browser implementation: lets the UI run in a plain browser (dev server, manual checks).
 // The config goes to localStorage, files go through <input type=file> and a download link.
+// A browser cannot update an installed app, so there are no updates here; the dev server can
+// stage a fake one (?fake-update, ?fake-update=fail) to show the update flow without a release.
 
-import { CONFIG_FILE, type PickedFile, type PickedText, type Platform } from "./types.ts";
+import { CONFIG_FILE, type PickedFile, type PickedText, type Platform, type Updates } from "./types.ts";
 
 const STORAGE_KEY = "kassa.managers.json";
 
@@ -16,7 +18,16 @@ function chooseFile(accept: string): Promise<File | null> {
   });
 }
 
-export function createWebPlatform(): Platform {
+async function devUpdates(): Promise<Updates | null> {
+  if (!import.meta.env.DEV) return null;
+  const mode = new URLSearchParams(location.search).get("fake-update");
+  if (mode === null) return null;
+  const { createFakeUpdates } = await import("./fake-updates.ts");
+  return createFakeUpdates({ fail: mode === "fail" });
+}
+
+export async function createWebPlatform(): Promise<Platform> {
+  const updates = await devUpdates();
   return {
     async pickExcel(): Promise<PickedFile | null> {
       const file = await chooseFile(".xlsx");
@@ -55,5 +66,7 @@ export function createWebPlatform(): Platform {
     async describeConfigLocation(): Promise<string> {
       return `localStorage (${CONFIG_FILE}, браузерный режим)`;
     },
+
+    updates,
   };
 }

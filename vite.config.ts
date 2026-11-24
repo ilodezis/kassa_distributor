@@ -21,8 +21,8 @@ export default defineConfig({
     headers: { "Content-Security-Policy": tauriConf.app.security.csp },
   },
   build: {
-    // WKWebView on macOS 12.3+ (Safari 15.4) and WebView2 both handle this.
-    target: ["es2022", "safari15"],
+    // WKWebView on macOS 26+ (Safari 26) and the evergreen WebView2 both handle this.
+    target: ["es2024", "safari26"],
   },
   test: {
     include: ["tests/**/*.test.ts"],

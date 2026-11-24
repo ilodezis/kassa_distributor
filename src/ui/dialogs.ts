@@ -57,3 +57,46 @@ export function confirmDialog(title: string, text: string, confirmLabel: string)
     title,
   );
 }
+
+/** Today in the local calendar as `YYYY-MM-DD`, the value format of `<input type="date">`. */
+export function todayIso(now: Date = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
+
+/** Asks for a date. Resolves to `YYYY-MM-DD`, or null when cancelled. */
+export function pickDateDialog(title: string, text: string, initial: string, confirmLabel: string): Promise<string | null> {
+  let value: string | null = null;
+  return open(
+    (close) => {
+      const input = h("input", { type: "date", id: "dialog-date", value: initial, required: true, autofocus: true });
+      const confirm = h("button", { class: "btn btn-primary", type: "submit" }, confirmLabel);
+      const sync = () => {
+        confirm.disabled = input.value === "";
+      };
+      input.addEventListener("input", sync);
+      const form = h(
+        "form",
+        {
+          onsubmit: (event: SubmitEvent) => {
+            event.preventDefault();
+            if (input.value === "") return;
+            value = input.value;
+            close(true);
+          },
+        },
+        h("p", { class: "modal-text" }, text),
+        h("label", { class: "field", for: input.id }, h("span", { class: "field-label" }, "Дата переноса"), input),
+        h(
+          "div",
+          { class: "modal-actions" },
+          h("button", { class: "btn", type: "button", onclick: () => close(false) }, "Отмена"),
+          confirm,
+        ),
+      );
+      return [form];
+    },
+    "info",
+    title,
+  ).then((ok) => (ok ? value : null));
+}

@@ -62,6 +62,8 @@ export interface MoveRow {
   inn: Cell;
   old_manager: string;
   new_manager: string;
+  /** Email of the new manager: the key the receiving system matches on. */
+  new_manager_email: string;
   tariff: number | null;
   paid: number;
 }
@@ -529,10 +531,10 @@ function buildChecks(
 }
 
 function frozenChecks(frozen: readonly PreparedRow[], innIndex: number): string[] {
-  if (frozen.length === 0) return ["Замороженных касс (расторжение / неизвестный статус): 0"];
+  if (frozen.length === 0) return ["Не участвуют в распределении: 0"];
 
   const lines = [
-    `Замороженных касс (расторжение / неизвестный статус), не распределены: ${frozen.length}`,
+    `Не участвуют в распределении, остались на своих менеджерах: ${frozen.length}`,
   ];
   for (const row of frozen) {
     let inn = "";
@@ -565,7 +567,7 @@ export function distribute(table: Table, config: ManagersConfigInput): Distribut
   const nameMap = getNameMap(managersConfig, pairs);
   const nameOf = (email: string) => nameMap.get(email) ?? email;
 
-  // Frozen rows (terminated, unknown status) stay where they are and skip balancing.
+  // Frozen rows (terminated, cancelled, unknown status) stay where they are and skip balancing.
   const workIndexes: number[] = [];
   prepared.rows.forEach((row, i) => {
     if (row.frozen === "") workIndexes.push(i);
@@ -598,6 +600,7 @@ export function distribute(table: Table, config: ManagersConfigInput): Distribut
       inn: innIndex >= 0 ? (row.cells[innIndex] ?? null) : "",
       old_manager: row.managerName,
       new_manager: nameOf(assigned[i]!),
+      new_manager_email: assigned[i]!,
       tariff: row.tariff,
       paid: row.paid,
     });

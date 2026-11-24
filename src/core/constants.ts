@@ -17,6 +17,8 @@ export const COL_FROZEN = "_frozen_reason";
 
 export const STATUS_PAID = "paid";
 export const KNOWN_STATUSES: readonly string[] = ["paid", "topay"];
+// Cancelled registers never take part in the distribution: they stay on their manager.
+export const CANCELLED_STATUSES: readonly string[] = ["cancelled", "canceled"];
 
 export const VALID_TARIFFS = [1, 3, 12] as const;
 export type Tariff = (typeof VALID_TARIFFS)[number];
@@ -30,7 +32,8 @@ export const BIG_CAP = 10 ** 9;
 
 export const MAX_SWAP_PASSES = 200;
 
-export const FROZEN_TERMINATED = "расторжение";
+export const FROZEN_TERMINATED = "расторжена";
+export const FROZEN_CANCELLED = "расторжена (cancelled)";
 
 export function isTariff(value: number | null | undefined): value is Tariff {
   return value === 1 || value === 3 || value === 12;

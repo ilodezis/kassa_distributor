@@ -7,7 +7,16 @@ import { describe, expect, it } from "vitest";
 import { COL_INN, COL_MANAGER, COL_NEW_MANAGER } from "../src/core/constants.ts";
 import { distribute } from "../src/core/distribute.ts";
 import type { Cell } from "../src/core/pystr.ts";
-import { MOVES_COLUMNS, SUMMARY_COLUMNS, buildResultWorkbook, readInputTable } from "../src/core/xlsx.ts";
+import {
+  MOVES_COLUMNS,
+  SUMMARY_COLUMNS,
+  TRANSFER_COLUMNS,
+  buildResultWorkbook,
+  buildTransferWorkbook,
+  parseTransferDate,
+  readInputTable,
+} from "../src/core/xlsx.ts";
+import { todayIso } from "../src/ui/dialogs.ts";
 import { COLUMNS, col, makeCase } from "./helpers.ts";
 
 async function toXlsx(rows: Cell[][]): Promise<ArrayBuffer> {
@@ -92,5 +101,58 @@ describe("result workbook", () => {
     const moves = sheets.find((s) => s.sheet === "moves")!.data;
     expect(moves).toEqual([[...MOVES_COLUMNS]]);
     expect(sheets[0]!.data[1]![columns.indexOf(COL_MANAGER)]).toBe("anna@cp.ru");
+  });
+});
+
+describe("transfer file", () => {
+  it("lists every move as ИНН, new manager email and the chosen date", async () => {
+    const { table, config } = makeCase(21, { rows: 150, support: 4, external: 2 });
+    const result = distribute(table, config);
+    expect(result.moves.length).toBeGreaterThan(0);
+
+    const blob = await buildTransferWorkbook(result.moves, parseTransferDate("2026-12-01"));
+    const sheets = await readXlsxFile(await blob.arrayBuffer());
+    expect(sheets.map((s) => s.sheet)).toEqual(["Лист1"]);
+
+    const [header, ...rows] = sheets[0]!.data;
+    expect(header).toEqual([...TRANSFER_COLUMNS]);
+    expect(rows.length).toBe(result.moves.length);
+    const supportEmails = new Set(config.managers.filter((m) => m.is_support).map((m) => m.email));
+    rows.forEach((row, i) => {
+      const move = result.moves[i]!;
+      expect(row[0]).toBe(String(move.inn));
+      expect(row[1]).toBe(move.new_manager_email);
+      expect(supportEmails.has(row[1] as string)).toBe(true);
+      expect((row[2] as Date).toISOString()).toBe("2026-12-01T00:00:00.000Z");
+    });
+  });
+
+  it("keeps the INN as text with its leading zero", async () => {
+    const blob = await buildTransferWorkbook(
+      [{ inn: "071303241361", old_manager: "Анна", new_manager: "Борис", new_manager_email: "boris@cp.ru", tariff: 12, paid: 0 }],
+      parseTransferDate("2026-01-31"),
+    );
+    const [, row] = (await readXlsxFile(await blob.arrayBuffer()))[0]!.data;
+    expect(row).toEqual(["071303241361", "boris@cp.ru", new Date(Date.UTC(2026, 0, 31))]);
+  });
+
+  it("rejects dates that are not a real YYYY-MM-DD day", () => {
+    expect(() => parseTransferDate("")).toThrow();
+    expect(() => parseTransferDate("01.12.2026")).toThrow();
+    expect(() => parseTransferDate("2026-02-30")).toThrow();
+  });
+
+  it("defaults the picker to today in the local calendar", () => {
+    expect(todayIso(new Date(2026, 0, 5, 23, 59))).toBe("2026-01-05");
+  });
+});
+
+describe("register count wording", () => {
+  it("picks the Russian noun form", async () => {
+    const { pluralRu } = await import("../src/ui/app.ts");
+    const form = (n: number) => pluralRu(n, "касса", "кассы", "касс");
+    expect([1, 2, 5, 11, 12, 21, 22, 25, 111, 104].map(form)).toEqual([
+      "касса", "кассы", "касс", "касс", "касс", "касса", "кассы", "касс", "касс", "кассы",
+    ]);
   });
 });

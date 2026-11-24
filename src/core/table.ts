@@ -9,7 +9,9 @@ import {
   COL_PAID,
   COL_STATUS,
   COL_TARIFF,
+  CANCELLED_STATUSES,
   COL_TERMINATION,
+  FROZEN_CANCELLED,
   FROZEN_TERMINATED,
   KNOWN_STATUSES,
   STATUS_PAID,
@@ -116,6 +118,7 @@ export function managersFromTable(table: Table): [string, string][] {
  *
  * Frozen rows stay on their current manager and are excluded from balancing:
  * - rows with a termination date;
+ * - cancelled rows (status cancelled);
  * - rows with an unknown payment status (not paid/topay).
  */
 export function validateAndPrepare(table: Table): PreparedTable {
@@ -140,6 +143,8 @@ export function validateAndPrepare(table: Table): PreparedTable {
     let frozen = "";
     if (iTermination >= 0 && normName(raw[iTermination]) !== "") {
       frozen = FROZEN_TERMINATED;
+    } else if (CANCELLED_STATUSES.includes(status)) {
+      frozen = FROZEN_CANCELLED;
     } else if (!KNOWN_STATUSES.includes(status)) {
       frozen = `неизвестный статус оплаты: '${status}'`;
     }
